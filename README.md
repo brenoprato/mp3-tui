@@ -23,6 +23,7 @@ This project was created as a study exercise to learn Rust, TUI development, and
 - [rodio](https://crates.io/crates/rodio) – audio playback
 - [color-eyre](https://crates.io/crates/color-eyre) – error handling
 - [mp3-duration](https://crates.io/crates/mp3-duration) – fallback for duration extraction
+- [sled](https://docs.rs/sled/latest/sled/) - local DB
 
 ## How to Run
 
