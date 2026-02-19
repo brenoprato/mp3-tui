@@ -1,84 +1,74 @@
-use std::rc::Rc;
-use crate::player::MusicPlayer;
-use crate::app::App;
-use std::time::Duration;
-use color_eyre::{eyre::{Ok,Result}};
-use crossterm::event::MouseButton;
+use crate::app::{App, UiMode};
+use crate::player::{MusicPlayer, PlaybackState};
 use ratatui::{
-    DefaultTerminal, Frame, buffer::Buffer, widgets::Gauge, crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, layout::{Constraint, Direction, Layout, Rect, Alignment}, macros::vertical, style::{
-        Color, Modifier, Style, Stylize, palette::tailwind::{BLUE, GREEN, SLATE}
-    }, symbols, text::Line, widgets::{
-        Block, Borders, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
-        StatefulWidget, Widget, Wrap,
-    }
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
+use std::time::Duration;
 
-
-pub fn render(frame:&mut Frame, app: &mut App, music_player: &mut MusicPlayer){
-    let mut vertical_chunks = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-        Constraint::Min(0),
-        Constraint::Length(3), 
-    ])
-    .split(frame.area());
-
-    render_info_keybind(frame, app, vertical_chunks[1]);
+pub fn render(frame: &mut Frame, app: &App, player: &MusicPlayer) {
+    let vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(frame.area());
 
     match app.ui_mode {
-        crate::app::UImode::Default => {render_default(frame, app, music_player, &mut vertical_chunks);}
-        crate::app::UImode::Full_screen_player => {render_full_screen_player(frame, app,music_player, &mut vertical_chunks);}
-    };
+        UiMode::Default => render_default(frame, app, player, vertical_chunks[0]),
+        UiMode::FullScreenPlayer => render_full_screen(frame, app, player, vertical_chunks[0]),
+    }
+
+    render_footer(frame, app, vertical_chunks[1]);
 }
 
-fn render_default(frame:&mut Frame, app: &mut App, music_player: &mut MusicPlayer, chunks_vertical: &mut Rc<[Rect]>){
+fn render_default(frame: &mut Frame, app: &App, player: &MusicPlayer, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(chunks_vertical[0]);
+        .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
+        .split(area);
 
-    render_file_list(frame, app, chunks[0]);
-    render_info_panel(frame, app, music_player, chunks[1]);
+    render_file_list(frame, app, player, chunks[0]);
+    render_player_panel(frame, player, chunks[1]);
 }
 
-fn render_full_screen_player(frame:&mut Frame, app: &mut App, music_player: &mut MusicPlayer, chunks_vertical: &mut Rc<[Rect]>){
-    let chunks = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([Constraint::Percentage(100)])
-    .split(chunks_vertical[0]);
-
-    render_info_panel(frame, app, music_player, chunks[0]);
+fn render_full_screen(frame: &mut Frame, _app: &App, player: &MusicPlayer, area: Rect) {
+    render_player_panel(frame, player, area);
 }
 
-
-fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app.archieves
-    .iter()
-    .map(|entry| {
-        let is_current = Some(&entry.path) == app.current_song_path.as_ref();
-
-        let style = if is_current {
-                Style::default().fg(Color::LightYellow)
+fn render_file_list(frame: &mut Frame, app: &App, player: &MusicPlayer, area: Rect) {
+    let items: Vec<ListItem> = app
+        .entries
+        .iter()
+        .map(|entry| {
+            let icon = if entry.is_dir { "DIR" } else { "MP3" };
+            let style = if player.is_playing_track(&entry.path) {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
 
-
-        let icon = if entry.is_dir { "🖿 " } else { "♫ " };
-        ListItem::new(format!("{} {}", icon, entry.name)).style(style)
-    }).collect();
+            ListItem::new(format!("{icon} {}", entry.name)).style(style)
+        })
+        .collect();
 
     let list = List::new(items)
-        .block(Block::default().title(app.current_path.to_string_lossy()).borders(Borders::ALL))
-        .highlight_style(Style::new().fg(Color::LightYellow).bg(Color::DarkGray))
-        .highlight_symbol("-> ");
+        .block(
+            Block::default()
+                .title(app.current_path.to_string_lossy())
+                .borders(Borders::ALL),
+        )
+        .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow))
+        .highlight_symbol("> ");
 
-    let mut list_state = ListState::default();
-    list_state.select(Some(app.select_index));
-    frame.render_stateful_widget(list, area, &mut list_state);
+    let mut state = ListState::default();
+    state.select(Some(app.selected_index));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_info_panel(frame: &mut Frame, app: &App, music_player: &mut MusicPlayer, area: Rect) {
+fn render_player_panel(frame: &mut Frame, player: &MusicPlayer, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -88,111 +78,106 @@ fn render_info_panel(frame: &mut Frame, app: &App, music_player: &mut MusicPlaye
         ])
         .split(area);
 
-    //Top: Cava (simple bar visualizer)
-    render_cava(frame, app,music_player, chunks[0]);
-
-    //Middle: Song name (without extension)
-    render_song_name(frame, app, chunks[1]);
-
-    //Bottom: Progress bar and time
-    render_progress_bar(frame, app,music_player, chunks[2]);
+    render_cava(frame, player, chunks[0]);
+    render_song_name(frame, player, chunks[1]);
+    render_progress(frame, player, chunks[2]);
 }
 
-fn render_cava(frame: &mut Frame, app: &App, music_player: &mut MusicPlayer, area: Rect) {
+fn render_cava(frame: &mut Frame, player: &MusicPlayer, area: Rect) {
     let block = Block::default().title("Cava").borders(Borders::ALL);
-    let inner_area = block.inner(area);
+    let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    if inner_area.width < 10 || inner_area.height < 1 {
+    if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    // Generate some fake bars based on the current playback position
-    let bars_count = inner_area.width as usize;
-    let max_height = inner_area.height as usize;
+    let elapsed_ms = player
+        .current_position()
+        .unwrap_or(Duration::ZERO)
+        .as_millis() as f32;
+    let phase = elapsed_ms / 120.0;
+    let mut line = String::with_capacity(inner.width as usize);
+    let levels = [' ', '.', ':', '-', '=', '+', '*', '#'];
+    let active = player.state == PlaybackState::Playing;
 
-    // Use a simple hash of the current time to produce pseudo-random heights
-    let seed = MusicPlayer::current_position(music_player).unwrap_or(Duration::ZERO).as_millis() as usize;
-    let mut bars = Vec::with_capacity(bars_count);
-
-    for i in 0..bars_count {
-        // Simple pseudo-random: (seed + i * 13) % (max_height+1)
-        let height = ((seed.wrapping_add(i * 13)) % (max_height + 1)) as u16;
-        bars.push(height);
-    }
-
-    // Draw each bar as a vertical line of blocks
-    for (x, &bar_height) in bars.iter().enumerate() {
-        for y in 0..bar_height {
-            let y_pos = inner_area.bottom() - 1 - y;
-            let cell = frame.buffer_mut().get_mut(inner_area.left() + x as u16, y_pos);
-            cell.set_char('█');
-            cell.set_fg(Color::LightMagenta);
-        }
-    }
-}
-
-/// Renders the name of the current song (without extension) or a placeholder.
-fn render_song_name(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default().title("Now Playing").borders(Borders::ALL);
-    let inner_area = block.inner(area);
-    frame.render_widget(block, area);
-
-    let song_name = if let Some(path) = &app.current_song_path {
-        // Remove extension
-        if let Some(stem) = path.file_stem() {
-            stem.to_string_lossy().to_string()
-        } else {
-            "Unknown".to_string()
-        }
-    } else {
-        "No song playing".to_string()
-    };
-
-    let paragraph = Paragraph::new(song_name)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
-    frame.render_widget(paragraph, inner_area);
-}
-
-/// Renders a progress bar with current/total time.
-fn render_progress_bar(frame: &mut Frame, app: &App, music_player: &MusicPlayer, area: Rect) {
-    let block = Block::default().title("Progress").borders(Borders::ALL);
-    let inner_area = block.inner(area);
-    frame.render_widget(block, area);
-
-    let (percent, label) = if let (Some(pos), Some(dur)) = (music_player.current_position(), music_player.current_duration()) {
-        let pos_secs = pos.as_secs();
-        let dur_secs = dur.as_secs();
-        let percent = if dur_secs > 0 {
-            (pos_secs as f64 / dur_secs as f64).clamp(0.0, 1.0)
+    for x in 0..inner.width {
+        let t = x as f32 * 0.26 + phase;
+        let wave = if active {
+            ((t.sin() + (t * 0.53 + 1.3).sin() + 2.0) / 4.0).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let label = format!(
-            "{:02}:{:02} / {:02}:{:02}",
-            pos_secs / 60, pos_secs % 60,
-            dur_secs / 60, dur_secs % 60
-        );
-        (percent, label)
-    } else {
-        (0.0, "00:00 / 00:00".to_string())
+        let idx = (wave * (levels.len() - 1) as f32).round() as usize;
+        line.push(levels[idx]);
+    }
+
+    let paragraph = Paragraph::new(line)
+        .alignment(Alignment::Left)
+        .style(Style::default().fg(Color::Cyan));
+    frame.render_widget(paragraph, inner);
+}
+
+fn render_song_name(frame: &mut Frame, player: &MusicPlayer, area: Rect) {
+    let block = Block::default().title("Now Playing").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let title = player
+        .current_song_name
+        .as_deref()
+        .unwrap_or("No song playing");
+    let state_tag = match player.state {
+        PlaybackState::Playing => "PLAY",
+        PlaybackState::Paused => "PAUSE",
+        PlaybackState::Stopped => "STOP",
+    };
+
+    let paragraph = Paragraph::new(format!("[{state_tag}] {title}"))
+        .alignment(Alignment::Center)
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    frame.render_widget(paragraph, inner);
+}
+
+fn render_progress(frame: &mut Frame, player: &MusicPlayer, area: Rect) {
+    let block = Block::default().title("Progress").borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let position = player.current_position().unwrap_or(Duration::ZERO);
+    let duration = player.current_duration();
+    let elapsed = format_duration(position);
+
+    let (ratio, label) = match duration {
+        Some(total) if total.as_secs_f64() > 0.0 => {
+            let progress = (position.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0);
+            (progress, format!("{elapsed} / {}", format_duration(total)))
+        }
+        _ => (0.0, format!("{elapsed} / --:--")),
     };
 
     let gauge = Gauge::default()
-        .ratio(percent)
+        .ratio(ratio)
         .label(label)
-        .style(Style::default().fg(Color::LightBlue))
         .gauge_style(Style::default().fg(Color::LightBlue).bg(Color::DarkGray));
-    frame.render_widget(gauge, inner_area);
+    frame.render_widget(gauge, inner);
 }
 
-fn render_info_keybind(frame: &mut Frame, app: &App, area: Rect){
-    let text: String = "↑ ↓: navegation | Enter: select | Esc: quit | 1,2: Interface".to_string();
+fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let mut text = String::from(
+        "Up/Down: Navigate | Enter: Open/Play/Pause | 1: Split | 2: Player | Esc: Quit",
+    );
+    if let Some(status) = &app.status {
+        text.push_str(" | ");
+        text.push_str(status);
+    }
 
-    let paragraph: Paragraph = Paragraph::new(text)
-    .block(Block::default().title("binds").borders(Borders::ALL))
-    .wrap(Wrap { trim: true });
-
+    let paragraph = Paragraph::new(text)
+        .block(Block::default().title("Keys").borders(Borders::ALL))
+        .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
+}
+
+fn format_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    format!("{:02}:{:02}", secs / 60, secs % 60)
 }

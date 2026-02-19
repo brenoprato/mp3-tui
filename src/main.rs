@@ -1,99 +1,78 @@
 mod app;
-mod ui;
 mod player;
+mod ui;
 
-use player::MusicPlayer;
 use app::App;
-use std::{result, time::Duration};
-use color_eyre::eyre::{Ok,Result};
-use ratatui::{init, restore,DefaultTerminal, Terminal, crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind}};
+use app::UiMode;
+use color_eyre::{Result, eyre::eyre};
+use crossterm::event::{self, Event, KeyCode};
+use player::MusicPlayer;
+use ratatui::DefaultTerminal;
+use std::time::Duration;
 
-
-fn main() -> Result<()> { 
+fn main() -> Result<()> {
     color_eyre::install()?;
-
-    //player init
-    let mut music_player: MusicPlayer = MusicPlayer::new().unwrap();
-
-    //App & tui init
-    let mut app: App = App::new();
+    let mut music_player = MusicPlayer::new().map_err(|err| eyre!(err.to_string()))?;
+    let mut app = App::new();
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app, &mut music_player);
     ratatui::restore();
-    result 
+    result
 }
 
-//main loop
-pub fn run(terminal: &mut DefaultTerminal, app: &mut App, music_player: &mut MusicPlayer)-> Result<()>{
-
+pub fn run(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    music_player: &mut MusicPlayer,
+) -> Result<()> {
     loop {
-        MusicPlayer::update_state(music_player);
-        if app.current_song_path != music_player.current_song_path{
-            app.current_song_path = None;
-        }
+        app.update_background_jobs();
+        music_player.update_state();
         terminal.draw(|frame| ui::render(frame, app, music_player))?;
-        
-        //keybinds
-        if event::poll(Duration::from_millis(16))?{
-            if let Event::Key(key) = event::read()?{
+
+        if event::poll(Duration::from_millis(16))? {
+            if let Event::Key(key) = event::read()? {
                 match key.code {
-                    event::KeyCode::Esc => {
+                    KeyCode::Esc => {
                         break;
                     }
-                    event::KeyCode::Down => {
-                        if app.select_index < app.archieves.len() - 1{
-                            app.select_index = app.select_index + 1;
-                        }
+                    KeyCode::Down => {
+                        app.move_down();
                     }
-                    event::KeyCode::Up => {
-                        if app.select_index > 0{
-                            app.select_index = app.select_index - 1;
-                        }
+                    KeyCode::Up => {
+                        app.move_up();
                     }
-                    event::KeyCode::Enter => {
-                        if let Some(selected_entry) = app.archieves.get(app.select_index) {
-                            if selected_entry.is_dir {
-                                app.current_path = selected_entry.path.clone();
-                                app.reload();
-                                app.select_index = 0;
-                            } else if App::is_audio_file(&selected_entry.path) {
-                                let selected_path = selected_entry.path.clone();
-                                let selected_name = selected_entry.name.clone();
-
-                                if let Some(current_path) = &app.current_song_path {
-                                    if current_path == &selected_path {
-                                        if music_player.is_paused() {
-                                            music_player.resume();
-                                        } else {
-                                            music_player.pause();
-                                        }
-                                    } else {
-                                        if let Err(e) = music_player.play_file(selected_path.clone()) {
-
-                                        } else {
-                                            app.current_song_path = Some(selected_path);
-                                        }
-                                    }
-                                } else {
-                                    if let Err(e) = music_player.play_file(selected_path.clone()) {
-
-                                    } else {
-                                        app.current_song_path = Some(selected_path);
+                    KeyCode::Enter => {
+                        if let Some(selected) = app.selected_entry().cloned() {
+                            if selected.is_dir {
+                                app.enter_directory(selected.path);
+                                app.status = None;
+                            } else if music_player.is_playing_track(&selected.path) {
+                                music_player.toggle_pause();
+                                app.status = None;
+                            } else {
+                                let prefetched_duration = app.cached_duration(&selected.path);
+                                match music_player
+                                    .play_file(selected.path.clone(), prefetched_duration)
+                                {
+                                    Ok(()) => app.status = None,
+                                    Err(err) => {
+                                        app.status = Some(format!("playback error: {err}"));
                                     }
                                 }
                             }
                         }
                     }
-                    event::KeyCode::Char('1') => {
-                        app.ui_mode = app::UImode::Default;
+                    KeyCode::Char('1') => {
+                        app.ui_mode = UiMode::Default;
                     }
-                    event::KeyCode::Char('2') => {
-                        app.ui_mode = app::UImode::Full_screen_player;
+                    KeyCode::Char('2') => {
+                        app.ui_mode = UiMode::FullScreenPlayer;
                     }
                     _ => {}
                 }
             }
-        }    
+        }
     }
 
     Ok(())
